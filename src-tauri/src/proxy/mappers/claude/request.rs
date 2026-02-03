@@ -1597,6 +1597,49 @@ fn merge_adjacent_roles(mut contents: Vec<Value>) -> Vec<Value> {
     merged
 }
 
+/// Sanitize function name to comply with Gemini API requirements
+/// Gemini API requires function names to:
+/// - Start with a letter or underscore
+/// - Contain only alphanumeric, underscores, dots, colons, or dashes
+/// - Have a maximum length of 64 characters
+fn sanitize_function_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    let mut chars = name.chars().peekable();
+    
+    // Ensure first character is valid (letter or underscore)
+    if let Some(&first) = chars.peek() {
+        if first.is_alphabetic() || first == '_' {
+            sanitized.push(first);
+            chars.next();
+        } else {
+            // If starts with invalid character, prefix with underscore
+            sanitized.push('_');
+        }
+    }
+    
+    // Process remaining characters
+    for ch in chars {
+        if ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == ':' || ch == '-' {
+            sanitized.push(ch);
+        } else {
+            // Replace invalid characters with underscore
+            sanitized.push('_');
+        }
+    }
+    
+    // Truncate to 64 characters if needed
+    if sanitized.len() > 64 {
+        sanitized.truncate(64);
+    }
+    
+    // Ensure it's not empty
+    if sanitized.is_empty() {
+        sanitized = "unnamed_function".to_string();
+    }
+    
+    sanitized
+}
+
 /// 构建 Tools
 fn build_tools(tools: &Option<Vec<Tool>>, has_web_search: bool) -> Result<Option<Value>, String> {
     if let Some(tools_list) = tools {
@@ -1624,6 +1667,18 @@ fn build_tools(tools: &Option<Vec<Tool>>, has_web_search: bool) -> Result<Option
                     continue;
                 }
 
+                // [FIX] Sanitize function name to comply with Gemini API requirements
+                let sanitized_name = sanitize_function_name(name);
+                
+                // Log if name was changed
+                if sanitized_name != *name {
+                    tracing::warn!(
+                        "[Claude-Request] Function name sanitized: '{}' -> '{}'",
+                        name,
+                        sanitized_name
+                    );
+                }
+
                 // 3. Client tools require input_schema
                 let mut input_schema = tool.input_schema.clone().unwrap_or(json!({
                     "type": "object",
@@ -1632,7 +1687,7 @@ fn build_tools(tools: &Option<Vec<Tool>>, has_web_search: bool) -> Result<Option
                 crate::proxy::common::json_schema::clean_json_schema(&mut input_schema);
 
                 function_declarations.push(json!({
-                    "name": name,
+                    "name": sanitized_name,
                     "description": tool.description,
                     "parameters": input_schema
                 }));

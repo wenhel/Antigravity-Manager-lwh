@@ -3,6 +3,49 @@ use super::models::*;
 use super::streaming::get_thought_signature;
 use serde_json::{json, Value};
 
+/// Sanitize function name to comply with Gemini API requirements
+/// Gemini API requires function names to:
+/// - Start with a letter or underscore
+/// - Contain only alphanumeric, underscores, dots, colons, or dashes
+/// - Have a maximum length of 64 characters
+fn sanitize_function_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    let mut chars = name.chars().peekable();
+    
+    // Ensure first character is valid (letter or underscore)
+    if let Some(&first) = chars.peek() {
+        if first.is_alphabetic() || first == '_' {
+            sanitized.push(first);
+            chars.next();
+        } else {
+            // If starts with invalid character, prefix with underscore
+            sanitized.push('_');
+        }
+    }
+    
+    // Process remaining characters
+    for ch in chars {
+        if ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == ':' || ch == '-' {
+            sanitized.push(ch);
+        } else {
+            // Replace invalid characters with underscore
+            sanitized.push('_');
+        }
+    }
+    
+    // Truncate to 64 characters if needed
+    if sanitized.len() > 64 {
+        sanitized.truncate(64);
+    }
+    
+    // Ensure it's not empty
+    if sanitized.is_empty() {
+        sanitized = "unnamed_function".to_string();
+    }
+    
+    sanitized
+}
+
 pub fn transform_openai_request(
     request: &OpenAIRequest,
     project_id: &str,
@@ -511,10 +554,25 @@ pub fn transform_openai_request(
                     continue;
                 }
 
-                if name == "local_shell_call" {
-                    if let Some(obj) = gemini_func.as_object_mut() {
-                        obj.insert("name".to_string(), json!("shell"));
-                    }
+                // [FIX] Sanitize function name to comply with Gemini API requirements
+                let sanitized_name = if name == "local_shell_call" {
+                    "shell".to_string()
+                } else {
+                    sanitize_function_name(name)
+                };
+                
+                // Log if name was changed
+                if sanitized_name != *name {
+                    tracing::warn!(
+                        "[OpenAI-Request] Function name sanitized: '{}' -> '{}'",
+                        name,
+                        sanitized_name
+                    );
+                }
+                
+                // Update the name in the function declaration
+                if let Some(obj) = gemini_func.as_object_mut() {
+                    obj.insert("name".to_string(), json!(sanitized_name));
                 }
             } else {
                  // [FIX] 如果工具没有名称，视为无效工具直接跳过 (防止 REQUIRED_FIELD_MISSING)
